@@ -1,0 +1,4 @@
+# network devices
+sudo mkdir -p /var/log/network/{cisco-rs,cisco-asa,juniper,arista,mikrotik,unknown}
+sudo chown -R syslog:adm /var/log/network
+sudo chmod -R 750 /var/log/network
