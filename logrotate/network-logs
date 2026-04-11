@@ -1,0 +1,43 @@
+# /etc/logrotate.d/network-logs
+#
+# Daily rotation for all *_current.log files managed by rsyslog.
+#
+# File lifecycle:
+#   rsyslog writes  →  <hostname>_current.log          (today, live)
+#   logrotate renames →  <hostname>_current_YYYY-MM-DD.log  (at rotation)
+#   postrotate renames →  <hostname>_YYYY-MM-DD.log         (final name)
+#   next rotation    →  <hostname>_YYYY-MM-DD.log.gz        (compressed)
+#
+# Retention: 90 daily files per device.
+
+/var/log/network/*/*/*_current.log
+/var/log/firewall/*/*/*_current.log
+/var/log/compute/*/*/*_current.log
+/var/log/vms/*/*/*_current.log
+{
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 syslog adm
+    sharedscripts
+    dateext
+    dateformat _%Y-%m-%d
+    extension .log
+
+    postrotate
+        # Rename  <hostname>_current_YYYY-MM-DD.log  →  <hostname>_YYYY-MM-DD.log
+        # logrotate inserts the date between "_current" and ".log"; we strip "_current".
+        find /var/log/network /var/log/firewall /var/log/compute /var/log/vms \
+            -name '*_current_*.log' 2>/dev/null | \
+        while IFS= read -r f; do
+            newname=$(echo "$f" | sed 's/_current_/_/')
+            mv -- "$f" "$newname"
+        done
+
+        # Signal rsyslog to reopen all log file descriptors
+        systemctl kill -s HUP rsyslog.service >/dev/null 2>&1 || true
+    endscript
+}
