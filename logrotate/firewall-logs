@@ -1,8 +1,10 @@
-# /etc/logrotate.d/network-logs
+# /etc/logrotate.d/firewall-logs
 #
-# Daily rotation for routers and switches under /var/log/network/
-# Covers: cisco-ios, cisco-ios-xe, cisco-ios-xr, cisco-nxos, arista-eos,
-#         mikrotik, unknown
+# Daily rotation for firewall devices under /var/log/firewall/
+# Covers: cisco-asa, cisco-ftd, fortigate
+#
+# Firewall logs are retained for 365 days (1 year) to support security
+# audits and compliance requirements. Adjust 'rotate' to suit your policy.
 #
 # File lifecycle:
 #   rsyslog writes  →  <hostname>_current.log
@@ -10,12 +12,12 @@
 #   postrotate renames →  <hostname>_YYYY-MM-DD.log
 #   next rotation    →  <hostname>_YYYY-MM-DD.log.gz
 #
-# Retention: 90 days
+# Retention: 365 days
 
-/var/log/network/*/*/*_current.log
+/var/log/firewall/*/*/*_current.log
 {
     daily
-    rotate 90
+    rotate 365
     compress
     delaycompress
     missingok
@@ -27,7 +29,7 @@
     extension .log
 
     postrotate
-        find /var/log/network -name '*_current_*.log' 2>/dev/null | \
+        find /var/log/firewall -name '*_current_*.log' 2>/dev/null | \
         while IFS= read -r f; do
             newname=$(echo "$f" | sed 's/_current_/_/')
             mv -- "$f" "$newname"

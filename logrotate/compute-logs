@@ -1,8 +1,7 @@
-# /etc/logrotate.d/network-logs
+# /etc/logrotate.d/compute-logs
 #
-# Daily rotation for routers and switches under /var/log/network/
-# Covers: cisco-ios, cisco-ios-xe, cisco-ios-xr, cisco-nxos, arista-eos,
-#         mikrotik, unknown
+# Daily rotation for physical servers under /var/log/compute/
+# Covers: dell (iDRAC), hp (iLO)
 #
 # File lifecycle:
 #   rsyslog writes  →  <hostname>_current.log
@@ -12,7 +11,7 @@
 #
 # Retention: 90 days
 
-/var/log/network/*/*/*_current.log
+/var/log/compute/*/*/*_current.log
 {
     daily
     rotate 90
@@ -27,7 +26,7 @@
     extension .log
 
     postrotate
-        find /var/log/network -name '*_current_*.log' 2>/dev/null | \
+        find /var/log/compute -name '*_current_*.log' 2>/dev/null | \
         while IFS= read -r f; do
             newname=$(echo "$f" | sed 's/_current_/_/')
             mv -- "$f" "$newname"

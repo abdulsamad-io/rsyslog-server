@@ -102,7 +102,7 @@ Per-device `<hostname>/` sub-directories are created automatically by rsyslog on
 | `<hostname>_YYYY-MM-DD.log` | Yesterday's log (uncompressed, immediately readable) |
 | `<hostname>_YYYY-MM-DD.log.gz` | Logs older than one day (gzip compressed) |
 
-The rename from `_current` to `_YYYY-MM-DD` is handled by the `postrotate` hook in `logrotate/network-logs`.
+The rename from `_current` to `_YYYY-MM-DD` is handled by the `postrotate` hook in each category's logrotate file.
 
 ---
 
@@ -205,15 +205,26 @@ You should see:
 
 ### Step 4 — Install logrotate configuration
 
+There is one logrotate file per log category. Copy all four into `/etc/logrotate.d/`:
+
 ```bash
-sudo cp logrotate/network-logs /etc/logrotate.d/network-logs
-sudo chmod 644 /etc/logrotate.d/network-logs
+sudo cp logrotate/network-logs  /etc/logrotate.d/network-logs
+sudo cp logrotate/firewall-logs /etc/logrotate.d/firewall-logs
+sudo cp logrotate/compute-logs  /etc/logrotate.d/compute-logs
+sudo cp logrotate/vm-logs       /etc/logrotate.d/vm-logs
+sudo chmod 644 /etc/logrotate.d/network-logs \
+               /etc/logrotate.d/firewall-logs \
+               /etc/logrotate.d/compute-logs \
+               /etc/logrotate.d/vm-logs
 ```
 
-Verify logrotate parses it without errors:
+Verify each file parses without errors:
 
 ```bash
 sudo logrotate --debug /etc/logrotate.d/network-logs
+sudo logrotate --debug /etc/logrotate.d/firewall-logs
+sudo logrotate --debug /etc/logrotate.d/compute-logs
+sudo logrotate --debug /etc/logrotate.d/vm-logs
 ```
 
 ---
@@ -508,12 +519,20 @@ sudo rsyslogd -N1 && sudo systemctl reload rsyslog
 
 ## 9. Log Rotation Details
 
-Logrotate runs daily via `/etc/cron.daily/logrotate`.
+Logrotate runs daily via `/etc/cron.daily/logrotate`. Each log category has its own configuration file so retention can be tuned independently.
+
+| Category | Config file | Retention | Notes |
+| -------- | ----------- | --------- | ----- |
+| `network` | `network-logs` | 90 days | Routers and switches |
+| `firewall` | `firewall-logs` | 365 days | Extended for audit/compliance |
+| `compute` | `compute-logs` | 90 days | Dell and HP servers |
+| `vms` | `vm-logs` | 90 days | Linux and Windows VMs |
+
+All four files share the same settings:
 
 | Setting | Value |
 | ------- | ----- |
 | Schedule | Daily |
-| Retention | 90 rotations (~3 months) |
 | Compression | gzip, applied to logs 2+ days old (`delaycompress`) |
 | New file permissions | `0640 syslog adm` |
 | rsyslog signal | `SIGHUP` sent in `postrotate` |
@@ -542,16 +561,21 @@ After rotation:
   SW-CORE_2026-04-10.log.gz
 ```
 
-**Test without rotating:**
+**Test without rotating (substitute the file you want to check):**
 
 ```bash
 sudo logrotate --debug /etc/logrotate.d/network-logs
+sudo logrotate --debug /etc/logrotate.d/firewall-logs
+sudo logrotate --debug /etc/logrotate.d/compute-logs
+sudo logrotate --debug /etc/logrotate.d/vm-logs
 ```
 
-**Force an immediate rotation (for testing):**
+**Force an immediate rotation of all categories (for testing):**
 
 ```bash
-sudo logrotate --force /etc/logrotate.d/network-logs
+for f in network-logs firewall-logs compute-logs vm-logs; do
+    sudo logrotate --force /etc/logrotate.d/$f
+done
 ```
 
 ---
@@ -640,16 +664,20 @@ sudo bash directories.sh
 
 ### logrotate not renaming files correctly
 
-Run in debug mode and check output:
+Run the affected category's config in debug mode:
 
 ```bash
-sudo logrotate --debug --force /etc/logrotate.d/network-logs 2>&1 | less
+# Substitute the relevant category file
+sudo logrotate --debug --force /etc/logrotate.d/firewall-logs 2>&1 | less
 ```
 
 Verify the postrotate `find` pattern matches your files:
 
 ```bash
-find /var/log/network -name '*_current_*.log' 2>/dev/null
+find /var/log/network  -name '*_current_*.log' 2>/dev/null
+find /var/log/firewall -name '*_current_*.log' 2>/dev/null
+find /var/log/compute  -name '*_current_*.log' 2>/dev/null
+find /var/log/vms      -name '*_current_*.log' 2>/dev/null
 ```
 
 ### Reloading rsyslog after config changes
@@ -677,5 +705,8 @@ rsyslog-server/
 │   ├── 23-rulesets-vms.conf     ← Rulesets: linux VM, windows VM, unknown catch-all
 │   └── 30-routing.conf          ← UDP/TCP inputs + content-based routing logic
 └── logrotate/
-    └── network-logs             ← Drop into /etc/logrotate.d/; daily rotate + compress
+    ├── network-logs             ← /etc/logrotate.d/  routers & switches  (90 days)
+    ├── firewall-logs            ← /etc/logrotate.d/  firewalls           (365 days)
+    ├── compute-logs             ← /etc/logrotate.d/  Dell & HP servers   (90 days)
+    └── vm-logs                  ← /etc/logrotate.d/  Linux & Windows VMs (90 days)
 ```
