@@ -18,6 +18,7 @@ Receives syslog over UDP/TCP 514 from network devices, firewalls, physical serve
 10. [Verification and Testing](#10-verification-and-testing)
 11. [Troubleshooting](#11-troubleshooting)
 12. [Project File Layout](#12-project-file-layout)
+13. [Graylog Integration](#13-graylog-integration)
 
 ---
 
@@ -693,20 +694,199 @@ Use `restart` only if `reload` is insufficient (e.g. after changing module confi
 
 ## 12. Project File Layout
 
-```
+```text
 rsyslog-server/
-├── directories.sh               ← Run once as root: creates /var/log/{category}/{type}/
+├── directories.sh                  ← Run once as root: creates /var/log/{category}/{type}/
 ├── conf.d/
-│   ├── 00-modules.conf          ← Load imudp + imtcp
-│   ├── 10-templates.conf        ← StandardLogFormat + all dynaFile path templates
-│   ├── 20-rulesets-network.conf ← Rulesets: cisco-ios/xe/xr, nxos, arista, mikrotik
-│   ├── 21-rulesets-firewall.conf← Rulesets: cisco-asa, cisco-ftd, fortigate
-│   ├── 22-rulesets-compute.conf ← Rulesets: dell (iDRAC), hp (iLO)
-│   ├── 23-rulesets-vms.conf     ← Rulesets: linux VM, windows VM, unknown catch-all
-│   └── 30-routing.conf          ← UDP/TCP inputs + content-based routing logic
-└── logrotate/
-    ├── network-logs             ← /etc/logrotate.d/  routers & switches  (90 days)
-    ├── firewall-logs            ← /etc/logrotate.d/  firewalls           (365 days)
-    ├── compute-logs             ← /etc/logrotate.d/  Dell & HP servers   (90 days)
-    └── vm-logs                  ← /etc/logrotate.d/  Linux & Windows VMs (90 days)
+│   ├── 00-modules.conf             ← Load imudp + imtcp
+│   ├── 10-templates.conf           ← StandardLogFormat + GELF templates + dynaFile paths
+│   ├── 20-rulesets-network.conf    ← Rulesets: cisco-ios/xe/xr, nxos, arista, mikrotik
+│   ├── 21-rulesets-firewall.conf   ← Rulesets: cisco-asa, cisco-ftd, fortigate
+│   ├── 22-rulesets-compute.conf    ← Rulesets: dell (iDRAC), hp (iLO)
+│   ├── 23-rulesets-vms.conf        ← Rulesets: linux VM, windows VM, unknown catch-all
+│   ├── 30-routing.conf             ← UDP/TCP inputs + content-based routing logic
+│   └── 40-forward-graylog.conf     ← GELF forwarding to Graylog (edit server IP first)
+├── logrotate/
+│   ├── network-logs                ← /etc/logrotate.d/  routers & switches  (90 days)
+│   ├── firewall-logs               ← /etc/logrotate.d/  firewalls           (365 days)
+│   ├── compute-logs                ← /etc/logrotate.d/  Dell & HP servers   (90 days)
+│   └── vm-logs                     ← /etc/logrotate.d/  Linux & Windows VMs (90 days)
+└── graylog/
+    ├── docker-compose.yml          ← Reference Graylog stack deployment
+    └── .env.example                ← Copy to .env and fill in passwords / host IP
+```
+
+---
+
+## 13. Graylog Integration
+
+### Overview
+
+rsyslog writes log files locally **and** simultaneously forwards a structured GELF
+copy to Graylog. The two outputs are independent — local files remain the
+persistent archive; Graylog provides the search UI, dashboards, and alerting.
+
+Every GELF message carries two extra fields that identify the source:
+
+| GELF field | Example values |
+| ---------- | -------------- |
+| `_device_category` | `firewall`, `network`, `compute`, `vms`, `unknown` |
+| `_device_type` | `cisco-asa`, `cisco-ios`, `fortigate`, `dell`, `linux`, … |
+
+These are set by rsyslog in each device ruleset and indexed automatically by
+Graylog — no grok parsing needed to filter by device class.
+
+---
+
+### Step 1 — Deploy Graylog
+
+```bash
+cd graylog/
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```bash
+# Set the IP of the machine that will run Graylog (your browser connects here)
+GRAYLOG_HOST_IP=192.168.1.100
+
+# Generate a random secret (min 16 chars)
+# pwgen -N 1 -s 96
+GRAYLOG_PASSWORD_SECRET=<your_random_secret>
+
+# SHA-256 hash of your chosen admin password
+# echo -n "YourPassword" | sha256sum | cut -d" " -f1
+GRAYLOG_ROOT_PASSWORD_SHA2=<sha256_of_your_password>
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+docker compose ps          # all three services should be healthy
+```
+
+Open `http://<GRAYLOG_HOST_IP>:9000` — log in with username `admin` and the
+password you hashed above.
+
+> **Memory note:** OpenSearch is configured for 2 GB heap by default. If your
+> host has 8 GB+ RAM, raise `OPENSEARCH_JAVA_OPTS` to `-Xms4g -Xmx4g` in
+> `docker-compose.yml` for better performance.
+
+---
+
+### Step 2 — Create the GELF UDP input in Graylog
+
+1. **System → Inputs → Launch new input**
+2. Select **GELF UDP** → click **Launch**
+3. Set **Port** to `12201`, leave other defaults → **Save**
+4. The input should show **Running** within a few seconds
+
+---
+
+### Step 3 — Configure rsyslog to forward to Graylog
+
+Edit `conf.d/40-forward-graylog.conf` and replace the placeholder:
+
+```bash
+# On the rsyslog server
+sudo nano /etc/rsyslog.d/40-forward-graylog.conf
+# Change: server="GRAYLOG_SERVER_IP"
+# To:     server="192.168.1.100"   (your actual Graylog IP)
+```
+
+Or copy the file from this repo and substitute inline:
+
+```bash
+sudo sed 's/GRAYLOG_SERVER_IP/192.168.1.100/' \
+    conf.d/40-forward-graylog.conf \
+    | sudo tee /etc/rsyslog.d/40-forward-graylog.conf
+
+sudo rsyslogd -N1                  # validate
+sudo systemctl restart rsyslog
+```
+
+---
+
+### Step 4 — Verify messages are arriving in Graylog
+
+```bash
+# Trigger a test message from the rsyslog server itself
+logger -n 127.0.0.1 -P 514 --udp -t "TEST" "graylog integration test"
+```
+
+In Graylog: **Search** → set time range to **Last 5 minutes** → you should see
+the message. Click it and confirm `_device_category` and `_device_type` fields
+are present.
+
+---
+
+### Step 5 — Create Streams for each device category
+
+Streams in Graylog act like named buckets — each message is routed to one or
+more streams based on field rules.
+
+1. **Streams → Create stream**
+2. Name: `Firewalls`, Description: `Cisco ASA, FTD, FortiGate`
+3. **Add stream rule**: Field `_device_category` — must match exactly — `firewall`
+4. **Start stream**
+
+Repeat for `Network Devices` (`network`), `Compute` (`compute`), `VMs` (`vms`).
+
+---
+
+### Step 6 — Install content packs for vendor parsing
+
+Content packs add ready-made extractors and dashboards for specific device types.
+
+1. **System → Content Packs → Find content packs**
+2. Search for and install:
+   - **Cisco ASA** — parses `%ASA-severity-msgid:` into structured fields
+   - **FortiGate** — parses `key=value` CEF pairs into individual fields
+   - **Cisco IOS** — if available
+3. Apply each content pack's extractors to the **GELF UDP** input
+
+After extractors are applied, Cisco ASA messages will have indexed fields like
+`src_ip`, `dst_ip`, `src_port`, `dst_port`, `action`, `acl_name` — all
+searchable and usable in dashboard widgets and alert conditions.
+
+---
+
+### Step 7 — Set up an alert (example)
+
+Alert on Cisco ASA deny events:
+
+1. **Alerts → Event Definitions → Create event definition**
+2. **Condition type**: Filter & Aggregation
+3. **Search query**: `_device_type:cisco-asa AND action:deny`
+4. **Execute every**: 1 minute, **Search within**: 1 minute
+5. **Aggregation**: count() > 50
+6. **Notifications**: add Slack / email / webhook as required
+7. **Save**
+
+---
+
+### Architecture with Graylog
+
+```text
+Network Devices ──┐
+Firewalls ─────────┤  UDP/TCP 514   ┌──────────────────┐
+Physical Servers ──┼───────────────▶│  rsyslog server  │
+VMs ───────────────┘                │                  │
+                                    │  classify msg    │
+                                    │  set metadata    │──▶ /var/log/{category}/
+                                    │                  │    (local file archive)
+                                    │                  │
+                                    └────────┬─────────┘
+                                             │ GELF UDP 12201
+                                             ▼
+                                    ┌──────────────────┐
+                                    │  Graylog         │
+                                    │  ─────────────── │
+                                    │  Streams         │
+                                    │  Dashboards      │
+                                    │  Alerts          │
+                                    │  Content packs   │
+                                    └──────────────────┘
 ```
