@@ -1,0 +1,105 @@
+---
+# Graylog stack — reference deployment for the rsyslog logging server.
+#
+# Components:
+#   MongoDB    — stores Graylog configuration, stream rules, dashboards
+#   OpenSearch — stores and indexes all log data
+#   Graylog    — web UI, GELF input, alerting, dashboards
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in the required values.
+#   2. docker compose up -d
+#   3. Open http://<host-ip>:9000  (admin / <GRAYLOG_ROOT_PASSWORD from .env>)
+#   4. Inputs → Launch new input → GELF UDP → port 12201 → Save.
+#
+# Resource guide (single-node home lab):
+#   Minimum:    4 GB RAM total  (OpenSearch 2 GB + Graylog 1 GB + Mongo 512 MB)
+#   Recommended: 8 GB RAM total  (OpenSearch 4 GB + Graylog 2 GB + Mongo 1 GB)
+#
+# Tune OPENSEARCH_JAVA_OPTS below to match available RAM.
+
+services:
+
+  mongodb:
+    image: "mongo:6.0"
+    container_name: graylog-mongodb
+    volumes:
+      - "mongodb_data:/data/db"
+    restart: "unless-stopped"
+    networks:
+      - graylog
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  opensearch:
+    image: "opensearchproject/opensearch:2.12.0"
+    container_name: graylog-opensearch
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"   # raise to -Xms4g -Xmx4g if RAM allows
+      bootstrap.memory_lock: "true"
+      discovery.type: "single-node"
+      action.auto_create_index: "false"
+      plugins.security.ssl.http.enabled: "false"
+      plugins.security.disabled: "true"
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+      nofile:
+        hard: 65536
+        soft: 65536
+    volumes:
+      - "os_data:/usr/share/opensearch/data"
+    restart: "unless-stopped"
+    networks:
+      - graylog
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  graylog:
+    image: "graylog/graylog:6.0"
+    container_name: graylog
+    environment:
+      # ── Required — set these in .env ─────────────────────────────────────────
+      GRAYLOG_PASSWORD_SECRET: "${GRAYLOG_PASSWORD_SECRET}"
+      GRAYLOG_ROOT_PASSWORD_SHA2: "${GRAYLOG_ROOT_PASSWORD_SHA2}"
+      # ── Network ──────────────────────────────────────────────────────────────
+      # Change to the IP/hostname used to reach this host from a browser
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://${GRAYLOG_HOST_IP}:9000/"
+      # ── Backends ─────────────────────────────────────────────────────────────
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://opensearch:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://mongodb/graylog"
+      # ── Optional tuning ──────────────────────────────────────────────────────
+      GRAYLOG_PROCESSBUFFER_PROCESSORS: "2"
+      GRAYLOG_OUTPUTBUFFER_PROCESSORS: "2"
+      GRAYLOG_MESSAGE_JOURNAL_ENABLED: "true"
+    entrypoint: "/usr/bin/tini -- wait-for-it opensearch:9200 --timeout=60 -- /docker-entrypoint.sh"
+    volumes:
+      - "graylog_data:/usr/share/graylog/data"
+    restart: "unless-stopped"
+    networks:
+      - graylog
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    ports:
+      - "9000:9000"         # Web UI
+      - "12201:12201/udp"   # GELF UDP  ← rsyslog forwards here
+      - "12201:12201/tcp"   # GELF TCP  (optional, for reliable delivery)
+
+volumes:
+  mongodb_data:
+  os_data:
+  graylog_data:
+
+networks:
+  graylog:
+    driver: bridge
